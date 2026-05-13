@@ -1,0 +1,324 @@
+{
+  "name": "n8n Workflow Copy Request Workaround",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Share Workflow",
+        "formDescription": "Please provide information to share this workflow:",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your e-mail",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Workflow ID",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Target e-mail",
+              "fieldType": "email",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        80,
+        0
+      ],
+      "id": "1b6168a8-4e2d-4e50-b8e4-8758f3a746c6",
+      "name": "Request to share workflow",
+      "webhookId": "e9178395-fde3-421b-b728-02cb9abc5d8c"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst errors = [];\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n\nconst requesterEmail = String(data['Your e-mail'] || '').trim().toLowerCase();\nconst targetEmail = String(data['Target e-mail'] || '').trim().toLowerCase();\nconst workflowInput = String(data['Workflow ID'] || '').trim();\n\nfunction extractWorkflowId(value) {\n  if (!value) return '';\n\n  // Full n8n URL, example:\n  // https://n8n.example.com/workflow/a1B2c3D4e5F6g7H8\n  const match = value.match(/\\/workflow\\/([^/?#]+)/);\n\n  if (match && match[1]) {\n    return match[1];\n  }\n\n  // If user pasted only the ID\n  return value;\n}\n\nconst workflowId = extractWorkflowId(workflowInput);\n\nif (!emailRegex.test(requesterEmail)) {\n  errors.push('Invalid requester email');\n}\n\nif (!emailRegex.test(targetEmail)) {\n  errors.push('Invalid target email');\n}\n\nif (!workflowId || workflowId.length < 5) {\n  errors.push('Workflow ID looks wrong');\n}\n\nif (requesterEmail === targetEmail) {\n  errors.push('You cannot share with yourself');\n}\n\nif (errors.length > 0) {\n  throw new Error(errors.join('; '));\n}\n\nreturn [\n  {\n    json: {\n      requester_email: requesterEmail,\n      target_email: targetEmail,\n      workflow_id: workflowId,\n      workflow_url_raw: workflowInput,\n      submittedAt: data.submittedAt,\n      formMode: data.formMode\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -160
+      ],
+      "id": "546f98a3-ebac-4372-8bc4-ff3ae5fc6a77",
+      "name": "Form Validation Node"
+    },
+    {
+      "parameters": {
+        "jsCode": "const workflowData = $input.first().json;\nconst formData = $('Form Validation Node').first().json;\n\nconst requesterEmail = String(formData.requester_email).trim().toLowerCase();\n\nconst ownerShare = Array.isArray(workflowData.shared)\n  ? workflowData.shared.find(s => s.role === 'workflow:owner')\n  : null;\n\nif (!ownerShare) {\n  throw new Error('Could not find workflow owner entry');\n}\n\nconst ownerProject = ownerShare.project || {};\nconst ownerProjectName = String(ownerProject.name || '').toLowerCase();\nconst ownerProjectType = ownerProject.type || null;\n\nif (ownerProjectType !== 'personal') {\n  throw new Error('This workflow is in a project, not a personal workspace. Use normal project sharing.');\n}\n\nif (!ownerProjectName.includes(requesterEmail)) {\n  throw new Error(`You are not the owner of this workflow. Owner project is: ${ownerProject.name}`);\n}\n\nreturn [\n  {\n    json: {\n      requester_email: formData.requester_email,\n      target_email: formData.target_email,\n      workflow_id: formData.workflow_id,\n      workflow_name: workflowData.name,\n      owner_confirmed: true,\n      owner_project_id: ownerShare.projectId,\n      owner_project_name: ownerProject.name,\n      owner_project_type: ownerProject.type\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -160
+      ],
+      "id": "e81088af-26cd-4ace-8118-5a34ac84ab20",
+      "name": "Validate ownership"
+    },
+    {
+      "parameters": {
+        "url": "=https://n8n.example.com/api/v1/workflows/{{ $json.workflow_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        336,
+        0
+      ],
+      "id": "d239325f-f1b6-4b46-a74a-5ebcd55d5c5e",
+      "name": "HTTP Request to n8n API - get workflow"
+    },
+    {
+      "parameters": {
+        "url": "https://n8n.example.com/api/v1/users?limit=250",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        608,
+        0
+      ],
+      "id": "6f497ab2-1812-4350-86e4-405e1dfcdd8c",
+      "name": "HTTP Request - list users"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst formData = $('Validate ownership').first().json;\n\nconst users = Array.isArray(response.data) ? response.data : [];\n\nconst targetEmail = String(formData.target_email).trim().toLowerCase();\n\nconst targetUser = users.find(user =>\n  String(user.email || '').trim().toLowerCase() === targetEmail\n);\n\nif (!targetUser) {\n  throw new Error(`Target user not found in n8n: ${formData.target_email}`);\n}\n\nreturn [\n  {\n    json: {\n      ...formData,\n      target_user_id: targetUser.id,\n      target_user_email: targetUser.email,\n      target_user_first_name: targetUser.firstName || null,\n      target_user_last_name: targetUser.lastName || null\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        -160
+      ],
+      "id": "b1d3b6ae-9fb6-4ccc-9003-c200d97a5e4d",
+      "name": "Validate Target User"
+    },
+    {
+      "parameters": {
+        "url": "https://n8n.example.com/api/v1/projects?limit=250",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        864,
+        0
+      ],
+      "id": "5db52669-d6d3-42bb-8b14-2f7d43d79cf2",
+      "name": "HTTP Request - list projects"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst formData = $('Validate Target User').first().json;\nconst workflowData = $('HTTP Request to n8n API - get workflow').first().json;\n\nconst projects = Array.isArray(response.data) ? response.data : [];\n\nconst targetEmail = String(formData.target_email).trim().toLowerCase();\n\nconst targetProject = projects.find(project => {\n  const name = String(project.name || '').toLowerCase();\n  const type = String(project.type || '').toLowerCase();\n\n  return type === 'personal' && name.includes(targetEmail);\n});\n\nif (!targetProject) {\n  throw new Error(`Target personal project not found for: ${formData.target_email}`);\n}\n\n// Existing shares, excluding the owner.\n// Important because PUT /share probably replaces the share list, not only appends.\nconst existingSharedProjectIds = Array.isArray(workflowData.shared)\n  ? workflowData.shared\n      .filter(s => s.role !== 'workflow:owner')\n      .map(s => s.projectId)\n      .filter(Boolean)\n  : [];\n\nconst shareWithIds = [...new Set([\n  ...existingSharedProjectIds,\n  targetProject.id\n])];\n\nreturn [\n  {\n    json: {\n      ...formData,\n      target_project_id: targetProject.id,\n      target_project_name: targetProject.name,\n      target_project_type: targetProject.type,\n      share_with_ids: shareWithIds\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        -160
+      ],
+      "id": "5a0fd792-a2e6-417b-8466-d79501a1204b",
+      "name": "Find target personal project"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://n8n.example.com/api/v1/workflows",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "={{ $json.workflow_copy_body.name }}"
+            },
+            {
+              "name": "nodes",
+              "value": "={{ $json.workflow_copy_body.nodes }}"
+            },
+            {
+              "name": "connections",
+              "value": "={{ $json.workflow_copy_body.connections }}"
+            },
+            {
+              "name": "settings",
+              "value": "={{ {} }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1328,
+        16
+      ],
+      "id": "08a6917a-89b0-41c8-9f56-b5a3c5fe5928",
+      "name": "Create workflow copy"
+    },
+    {
+      "parameters": {
+        "jsCode": "const workflowData = $('HTTP Request to n8n API - get workflow').first().json;\nconst formData = $('Find target personal project').first().json;\n\nconst cleanWorkflow = {\n  name: `${workflowData.name} - copy for ${formData.target_user_first_name || formData.target_email}`,\n  nodes: workflowData.nodes || [],\n  connections: workflowData.connections || {},\n  settings: {}\n};\n\nreturn [\n  {\n    json: {\n      ...formData,\n      workflow_copy_body: cleanWorkflow\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        -160
+      ],
+      "id": "74de3ac0-6e8c-40e9-b18b-bdae32cd6fad",
+      "name": "Prepare workflow copy"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Request to share workflow": {
+      "main": [
+        [
+          {
+            "node": "Form Validation Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form Validation Node": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request to n8n API - get workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request to n8n API - get workflow": {
+      "main": [
+        [
+          {
+            "node": "Validate ownership",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate ownership": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - list users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - list users": {
+      "main": [
+        [
+          {
+            "node": "Validate Target User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Target User": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - list projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - list projects": {
+      "main": [
+        [
+          {
+            "node": "Find target personal project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find target personal project": {
+      "main": [
+        [
+          {
+            "node": "Prepare workflow copy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare workflow copy": {
+      "main": [
+        [
+          {
+            "node": "Create workflow copy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a62fa891-11ab-4547-a165-9a933dfb694f",
+  "meta": {
+    "instanceId": "ab28bb0a9148b582f6f2f0ad678e37bd5bf9239e86322b82d12f75d678f005bb"
+  },
+  "id": "zER1gyTp7FAu8MVQ",
+  "tags": []
+}
